@@ -6,6 +6,59 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
+def calculate_joint_angle(p1, p2, p3):
+    """
+    Calculate the angle (in degrees) at p2 formed by points p1-p2-p3.
+    p1, p2, p3 are tuples (x, y, z) or (x, y).
+    """
+    p1 = np.array(p1[:2])  # Use only x, y for 2D angle
+    p2 = np.array(p2[:2])
+    p3 = np.array(p3[:2])
+    v1 = p1 - p2
+    v2 = p3 - p2
+    cos_theta = np.dot(v1, v2) / (np.linalg.norm(v1) * np.linalg.norm(v2) + 1e-6)
+    cos_theta = np.clip(cos_theta, -1, 1)
+    angle = np.degrees(np.arccos(cos_theta))
+    return angle
+
+def estimate_center_of_gravity(keypoints):
+    """
+    Estimate center of gravity based on hip and foot positions.
+    Returns (x, y) coordinates normalized to [0,1].
+    """
+    if not keypoints:
+        return None
+    hip_left = keypoints[mp_pose.PoseLandmark.LEFT_HIP.value]
+    hip_right = keypoints[mp_pose.PoseLandmark.RIGHT_HIP.value]
+    foot_left = keypoints[mp_pose.PoseLandmark.LEFT_ANKLE.value]
+    foot_right = keypoints[mp_pose.PoseLandmark.RIGHT_ANKLE.value]
+    if all([hip_left, hip_right, foot_left, foot_right]):
+        x = (hip_left[0] + hip_right[0] + foot_left[0] + foot_right[0]) / 4
+        y = (hip_left[1] + hip_right[1] + foot_left[1] + foot_right[1]) / 4
+        return (x, y)
+    return None
+
+def get_body_region_joints():
+    """
+    Define joint indices for body regions: arms, legs, torso.
+    Returns a dictionary mapping region names to lists of joint indices.
+    """
+    return {
+        "arms": [
+            mp_pose.PoseLandmark.LEFT_SHOULDER.value, mp_pose.PoseLandmark.RIGHT_SHOULDER.value,
+            mp_pose.PoseLandmark.LEFT_ELBOW.value, mp_pose.PoseLandmark.RIGHT_ELBOW.value,
+            mp_pose.PoseLandmark.LEFT_WRIST.value, mp_pose.PoseLandmark.RIGHT_WRIST.value
+        ],
+        "legs": [
+            mp_pose.PoseLandmark.LEFT_HIP.value, mp_pose.PoseLandmark.RIGHT_HIP.value,
+            mp_pose.PoseLandmark.LEFT_KNEE.value, mp_pose.PoseLandmark.RIGHT_KNEE.value,
+            mp_pose.PoseLandmark.LEFT_ANKLE.value, mp_pose.PoseLandmark.RIGHT_ANKLE.value
+        ],
+        "torso": [
+            mp_pose.PoseLandmark.LEFT_SHOULDER.value, mp_pose.PoseLandmark.RIGHT_SHOULDER.value,
+            mp_pose.PoseLandmark.LEFT_HIP.value, mp_pose.PoseLandmark.RIGHT_HIP.value
+        ]
+    }
 
 # Initialize MediaPipe Pose
 mp_pose = mp.solutions.pose
@@ -13,70 +66,137 @@ pose = mp_pose.Pose()
 mp_drawing = mp.solutions.drawing_utils
 JOINT_NAMES = [lm.name for lm in mp_pose.PoseLandmark]
 
-def generate_heuristics(avg_diffs, differences, sport="general", joint_threshold=0.1):
+def generate_heuristics(avg_diffs, differences, sport="general", joint_threshold=0.1, teacher_kps=None, student_kps=None):
     """
-    Generates a list of recommendations based on average errors per joint.
+    Generates a list of recommendations, prioritizing specific tips and avoiding contradictions.
     
     Parameters:
       avg_diffs: 1D numpy array with average differences for each joint.
-      differences: list of lists (frames x joints) with differences (for computing variance).
-      sport: a string indicating the sport context ('fencing', 'skating', 'general')
+      differences: list of lists (frames x joints) with differences (for variance and timing).
+      sport: a string indicating the sport context ('fencing', 'skating', 'general').
       joint_threshold: baseline threshold for triggering a tip.
+      teacher_kps: list of teacher keypoints per frame (for angle calculations).
+      student_kps: list of student keypoints per frame (for angle calculations).
       
     Returns:
-      A list of heuristic tips (strings).
+      A list of heuristic tips (strings) and a dictionary of per-region scores.
     """
     tips = []
+    variances = np.std(differences, axis=0) if differences and differences[0] is not None else np.zeros_like(avg_diffs)
     
-    # Calculate per-joint standard deviations, which can be used to gauge consistency.
-    if differences and differences[0] is not None:
-        variances = np.std(differences, axis=0)
-    else:
-        variances = np.zeros_like(avg_diffs)
-    
-    # Fencing specific heuristics
+    # Joint weights
+    joint_weights = {i: 1.0 for i in range(len(JOINT_NAMES))}
     if sport.lower() == "fencing":
-        # Example: In fencing, the guard position is vital.
-        # Check right wrist and right elbow (for a strong guard) as well as the torso alignment.
-        if avg_diffs[mp_pose.PoseLandmark.RIGHT_WRIST.value] > joint_threshold:
-            tips.append("Focus on keeping your right wrist stable to maintain a strong guard.")
-        if avg_diffs[mp_pose.PoseLandmark.RIGHT_ELBOW.value] > joint_threshold * 0.8:
-            tips.append("Improve the alignment of your right elbow for better parries.")
-        # You might also consider hip or shoulder positions in a real case.
-        # Add more rules based on expert advice.
-    
-    # Skating specific heuristics
+        joint_weights[mp_pose.PoseLandmark.RIGHT_WRIST.value] = 1.5
+        joint_weights[mp_pose.PoseLandmark.RIGHT_ELBOW.value] = 1.3
+        joint_weights[mp_pose.PoseLandmark.LEFT_KNEE.value] = 1.2
     elif sport.lower() == "skating":
-        # In skating, lower body stability is crucial.
-        if avg_diffs[mp_pose.PoseLandmark.LEFT_KNEE.value] > joint_threshold:
-            tips.append("Work on stabilizing your left knee, as it’s key for balance on skates.")
-        if avg_diffs[mp_pose.PoseLandmark.RIGHT_ANKLE.value] > joint_threshold:
-            tips.append("Your right ankle may be unstable; consider drills to improve foot control.")
-        # You might add suggestions related to hip and core engagement.
+        joint_weights[mp_pose.PoseLandmark.LEFT_KNEE.value] = 1.5
+        joint_weights[mp_pose.PoseLandmark.RIGHT_KNEE.value] = 1.5
+        joint_weights[mp_pose.PoseLandmark.LEFT_ANKLE.value] = 1.3
+        joint_weights[mp_pose.PoseLandmark.RIGHT_ANKLE.value] = 1.3
     
-    # General heuristics
-    else:  # 'general' or any unspecified sport
-        if avg_diffs[mp_pose.PoseLandmark.RIGHT_WRIST.value] > joint_threshold:
-            tips.append("Try keeping your right hand steadier.")
-        if avg_diffs[mp_pose.PoseLandmark.LEFT_KNEE.value] > joint_threshold:
-            tips.append("Work on your left knee positioning for better stability.")
-        if variances[mp_pose.PoseLandmark.RIGHT_WRIST.value] > 0.05:
-            tips.append("High variability in your right wrist movement suggests a need for consistency drills.")
+    # Per-region scoring
+    region_scores = {"arms": 0, "legs": 0, "torso": 0}
+    region_joints = get_body_region_joints()
+    for region, joints in region_joints.items():
+        region_diffs = [avg_diffs[i] * joint_weights[i] for i in joints if not np.isnan(avg_diffs[i])]
+        region_scores[region] = np.mean(region_diffs) if region_diffs else 0
     
-    # You can add more overall checks. For example, if any joint shows very high error:
-    if np.any(avg_diffs > 0.15):
-        tips.append("Some joints have very high deviations. Consider slow-motion practice to correct your form.")
+    # Angle-based heuristics (limit to one per joint)
+    angle_tips = {}
+    if teacher_kps and student_kps:
+        for t_kp, s_kp in zip(teacher_kps, student_kps):
+            if t_kp and s_kp:
+                for side in ["LEFT", "RIGHT"]:
+                    shoulder = mp_pose.PoseLandmark[f"{side}_SHOULDER"].value
+                    elbow = mp_pose.PoseLandmark[f"{side}_ELBOW"].value
+                    wrist = mp_pose.PoseLandmark[f"{side}_WRIST"].value
+                    t_angle = calculate_joint_angle(t_kp[shoulder], t_kp[elbow], t_kp[wrist])
+                    s_angle = calculate_joint_angle(s_kp[shoulder], s_kp[elbow], s_kp[wrist])
+                    angle_diff = abs(t_angle - s_angle)
+                    if angle_diff > 10:  # ±10° tolerance
+                        key = f"{side}_ELBOW"
+                        if key not in angle_tips or angle_diff > angle_tips[key][0]:
+                            angle_tips[key] = (angle_diff, f"{side} elbow angle off by {angle_diff:.1f}°. Adjust to match reference.")
     
-    # A summary of overall performance can be added as a tip:
-    overall_error = np.mean(avg_diffs)
-    if overall_error < joint_threshold * 0.5:
-        tips.append("Excellent overall movement consistency!")
-    elif overall_error < joint_threshold:
-        tips.append("Good performance, but there’s room for improvement in specific areas.")
+    # Multi-joint combination heuristics
+    if sport.lower() == "fencing":
+        knee_idx = mp_pose.PoseLandmark.LEFT_KNEE.value
+        elbow_idx = mp_pose.PoseLandmark.RIGHT_ELBOW.value
+        if avg_diffs[knee_idx] > joint_threshold and avg_diffs[elbow_idx] > joint_threshold:
+            tips.append("Lead knee too straight and rear arm misaligned; you may be off-balance.")
+        if (avg_diffs[mp_pose.PoseLandmark.RIGHT_WRIST.value] > joint_threshold and
+            avg_diffs[mp_pose.PoseLandmark.RIGHT_ELBOW.value] > joint_threshold):
+            tips.append("Both right wrist and elbow are off; focus on maintaining guard position.")
+    
+    elif sport.lower() == "skating":
+        if (avg_diffs[mp_pose.PoseLandmark.LEFT_KNEE.value] > joint_threshold and
+            avg_diffs[mp_pose.PoseLandmark.RIGHT_KNEE.value] > joint_threshold):
+            tips.append("Both knees are unstable; practice low stance for better balance.")
+    
     else:
-        tips.append("Overall movement error is high; consider a thorough review of your technique.")
-
-    return tips
+        if (avg_diffs[mp_pose.PoseLandmark.LEFT_SHOULDER.value] > joint_threshold and
+            avg_diffs[mp_pose.PoseLandmark.RIGHT_SHOULDER.value] > joint_threshold):
+            tips.append("Both shoulders are raised too high; relax for better posture.")
+    
+    # Timing heuristics
+    if len(differences) > 10:
+        sudden_deviations = []
+        for i in range(1, len(differences)):
+            if differences[i] and differences[i-1]:
+                frame_diff = np.nanmean([abs(differences[i][j] - differences[i-1][j])
+                                         for j in range(len(differences[i]))
+                                         if differences[i][j] is not None and differences[i-1][j] is not None])
+                if frame_diff > joint_threshold * 1.5:
+                    sudden_deviations.append(i)
+        if sudden_deviations:
+            tips.append(f"Sudden deviations detected at frames {sudden_deviations}. Ensure smooth follow-through.")
+    
+    # Side-dependence for fencing
+    if sport.lower() == "fencing":
+        if avg_diffs[mp_pose.PoseLandmark.LEFT_KNEE.value] > joint_threshold:
+            tips.append("Lead leg (left knee) needs better alignment for lunges.")
+        if avg_diffs[mp_pose.PoseLandmark.RIGHT_ELBOW.value] > joint_threshold:
+            tips.append("Rear arm (right elbow) is misaligned; keep it steady for balance.")
+    
+    # Balance assessment
+    if teacher_kps and student_kps:
+        t_cog = estimate_center_of_gravity(teacher_kps[0] if teacher_kps else None)
+        s_cog = estimate_center_of_gravity(student_kps[0] if student_kps else None)
+        if t_cog and s_cog:
+            cog_diff = np.hypot(t_cog[0] - s_cog[0], t_cog[1] - s_cog[1])
+            if cog_diff > 0.05:
+                tips.append(f"Center of gravity off by {cog_diff:.3f}. Adjust stance to avoid leaning.")
+    
+    # Tracking over time
+    consistent_issues = []
+    for i, joint in enumerate(JOINT_NAMES):
+        error_frames = sum(1 for frame in differences if frame[i] is not None and frame[i] > joint_threshold)
+        if error_frames / len(differences) > 0.65:
+            consistent_issues.append(f"{joint} misaligned in {error_frames/len(differences)*100:.1f}% of frames.")
+    tips.extend(consistent_issues)
+    
+    # Add angle-based tips (limited to top 3)
+    angle_tips_sorted = sorted(angle_tips.values(), key=lambda x: x[0], reverse=True)[:3]
+    tips.extend([tip for _, tip in angle_tips_sorted])
+    
+    # General performance summary (only if no specific tips)
+    if not tips:  # Only add generic tip if no specific issues found
+        weighted_avg_diff = np.mean([avg_diffs[i] * joint_weights[i] for i in range(len(avg_diffs))])
+        if weighted_avg_diff < joint_threshold * 0.5:
+            tips.append("Excellent overall movement consistency!")
+        elif weighted_avg_diff < joint_threshold:
+            tips.append("Good performance, but refine specific areas.")
+        else:
+            tips.append("High overall error; review technique thoroughly.")
+    
+    # Region-based feedback
+    for region, score in region_scores.items():
+        if score > joint_threshold:
+            tips.append(f"{region.capitalize()} region shows high error (score: {score:.3f}). Focus on this area.")
+    
+    return tips, region_scores
     
 
 # --- Offline Processing Functions ---
@@ -116,7 +236,7 @@ def compare_videos(teacher_kps, student_kps):
     return frame_differences
 
 
-def summarize_differences(differences):
+def summarize_differences(differences, teacher_kps=None, student_kps=None, sport="general", threshold=0.1):
     if not differences:
         print("No valid frame comparisons found.")
         return [], ["No movement data available for analysis. Check video quality or pose detection."]
@@ -124,68 +244,239 @@ def summarize_differences(differences):
     if not isinstance(avg_diffs, np.ndarray):
         print("Average differences is not an array. Something went wrong.")
         return [], ["Pose data may be incomplete."]
-    tips = []
-    try:
-        if avg_diffs[mp_pose.PoseLandmark.RIGHT_WRIST.value] > 0.1:
-            tips.append("Try keeping your right hand steadier.")
-        if avg_diffs[mp_pose.PoseLandmark.LEFT_KNEE.value] > 0.1:
-            tips.append("Work on your left knee position during lunges.")
-        if avg_diffs[mp_pose.PoseLandmark.RIGHT_KNEE.value] > 0.1:
-            tips.append("Focus on maintaining right knee alignment.")
-        if avg_diffs[mp_pose.PoseLandmark.RIGHT_ANKLE.value] > 0.1:
-            tips.append("Your right foot positioning needs more stability.")
-        if avg_diffs[mp_pose.PoseLandmark.LEFT_ELBOW.value] > 0.1:
-            tips.append("Watch your left elbow movement.")
-        if avg_diffs[mp_pose.PoseLandmark.LEFT_WRIST.value] > 0.1:
-            tips.append("Keep your left hand under better control.")
-    except IndexError as e:
-        print("Indexing error in tip generation:", e)
-        tips.append("Some body landmarks may be missing or undetected.")
+    
+    # Generate tips with enhanced heuristics
+    tips, region_scores = generate_heuristics(avg_diffs, differences, sport=sport,
+                                           joint_threshold=threshold,
+                                           teacher_kps=teacher_kps,
+                                           student_kps=student_kps)
+    
+    # Print region scores
+    print("Per-Region Error Scores:")
+    for region, score in region_scores.items():
+        print(f"  {region.capitalize()}: {score:.3f}")
+    
     # Heuristic accuracy score
     valid_diffs = avg_diffs[~np.isnan(avg_diffs)]
     mean_diff = np.mean(valid_diffs)
     accuracy_score = max(0, 100 - (mean_diff * 100))
     print(f"Movement Accuracy Score: {accuracy_score:.2f}%")
+    
     return avg_diffs, tips
 
 
-def visualize_comparison(teacher_video, student_video, output_path="output_comparison.mp4", threshold=0.1):
+def visualize_comparison_normal(teacher_video, student_video, output_path="output_comparison_normal.mp4", threshold=0.1):
     cap1 = cv2.VideoCapture(teacher_video)
     cap2 = cv2.VideoCapture(student_video)
     fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-    out = cv2.VideoWriter(output_path, fourcc, 20.0, (1280, 480))
+    out = cv2.VideoWriter(output_path, fourcc, 20.0, (720, 480))
+    
     while cap1.isOpened() and cap2.isOpened():
         ret1, frame1 = cap1.read()
         ret2, frame2 = cap2.read()
         if not ret1 or not ret2:
             break
-        frame1 = cv2.resize(frame1, (640, 480))
-        frame2 = cv2.resize(frame2, (640, 480))
+        
+        frame1 = cv2.rotate(frame1, cv2.ROTATE_90_CLOCKWISE)
+        frame2 = cv2.rotate(frame2, cv2.ROTATE_90_CLOCKWISE)
+        frame1 = cv2.resize(frame1, (360, 480))
+        frame2 = cv2.resize(frame2, (360, 480))
+        
         img1 = cv2.cvtColor(frame1, cv2.COLOR_BGR2RGB)
         img2 = cv2.cvtColor(frame2, cv2.COLOR_BGR2RGB)
         res1 = pose.process(img1)
         res2 = pose.process(img2)
+        
         if res1.pose_landmarks and res2.pose_landmarks:
             kp1 = [(lm.x, lm.y, lm.z) for lm in res1.pose_landmarks.landmark]
             kp2 = [(lm.x, lm.y, lm.z) for lm in res2.pose_landmarks.landmark]
             diffs = calculate_difference(kp1, kp2)
+            
+            valid_diffs = [(i, d) for i, d in enumerate(diffs) if d is not None]
+            valid_diffs.sort(key=lambda x: x[1], reverse=True)
+            top_errors = valid_diffs[:1]
+            
+            teacher_style = mp_drawing.DrawingSpec(color=(255, 255, 0), thickness=1, circle_radius=2)
+            mp_drawing.draw_landmarks(frame2, res1.pose_landmarks, mp_pose.POSE_CONNECTIONS,
+                                    landmark_drawing_spec=teacher_style)
+            
+            for i, d in enumerate(diffs):
+                h, w = frame2.shape[:2]
+                p2 = res2.pose_landmarks.landmark[i]
+                x, y = int(p2.x * w), int(p2.y * h)
+                if (i, d) in top_errors and d is not None:
+                    if d > threshold * 1.5:
+                        color = (0, 0, 255)
+                        label = f"{JOINT_NAMES[i]}: High"
+                    elif d > threshold:
+                        color = (0, 255, 255)
+                        label = f"{JOINT_NAMES[i]}: Adjust"
+                    else:
+                        color = (0, 255, 0)
+                        label = None
+                    cv2.circle(frame2, (x, y), 5, color, -1)
+                    if label:
+                        cv2.putText(frame2, label, (x + 10, y), cv2.FONT_HERSHEY_SIMPLEX, 0.4, color, 1)
+                else:
+                    cv2.circle(frame2, (x, y), 5, (0, 255, 0), -1)
+            
+            overlay = frame2.copy()
+            for i, d in top_errors:
+                if d > threshold:
+                    x, y = int(res2.pose_landmarks.landmark[i].x * w), int(res2.pose_landmarks.landmark[i].y * h)
+                    intensity = min(255, int(d * 1000))
+                    cv2.circle(overlay, (x, y), 20, (0, 0, intensity), -1)
+            alpha = 0.3
+            frame2 = cv2.addWeighted(overlay, alpha, frame2, 1 - alpha, 0)
+            
             mp_drawing.draw_landmarks(frame1, res1.pose_landmarks, mp_pose.POSE_CONNECTIONS)
             mp_drawing.draw_landmarks(frame2, res2.pose_landmarks, mp_pose.POSE_CONNECTIONS)
-            for i, d in enumerate(diffs):
-                if d and d > threshold:
-                    h, w = frame1.shape[:2]
-                    p1 = res1.pose_landmarks.landmark[i]
-                    p2 = res2.pose_landmarks.landmark[i]
-                    cv2.circle(frame1, (int(p1.x*w), int(p1.y*h)), 5, (0, 0, 255), -1)
-                    cv2.circle(frame2, (int(p2.x*w), int(p2.y*h)), 5, (0, 0, 255), -1)
+        
         combined = cv2.hconcat([frame1, frame2])
-        out.write(combined)
+        
+        if res1.pose_landmarks and res2.pose_landmarks:
+            valid_diffs = [d for d in diffs if d is not None]
+            avg_diff = np.mean(valid_diffs) if valid_diffs else 0
+            if avg_diff > 1.5 * threshold:
+                cv2.putText(combined, "High Error Detected", (10, 30), 
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+                for _ in range(3):
+                    out.write(combined)
+            else:
+                out.write(combined)
+        else:
+            out.write(combined)
+    
     cap1.release()
     cap2.release()
     out.release()
-    print(f"Comparison video saved to {output_path}")
+    print(f"Normal comparison video saved to {output_path}")
 
-# --- Real-Time Functions ---
+def visualize_comparison_dynamic(teacher_video, student_video, output_path="output_comparison_dynamic.mp4", threshold=0.1):
+    cap1 = cv2.VideoCapture(teacher_video)
+    cap2 = cv2.VideoCapture(student_video)
+    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+    out = cv2.VideoWriter(output_path, fourcc, 20.0, (720, 480))
+    
+    frame_count = 0
+    window_size = 20
+    window_diffs = []
+    window_frames = []
+    
+    while cap1.isOpened() and cap2.isOpened():
+        ret1, frame1 = cap1.read()
+        ret2, frame2 = cap2.read()
+        if not ret1 or not ret2:
+            break
+        
+        frame1 = cv2.rotate(frame1, cv2.ROTATE_90_CLOCKWISE)
+        frame2 = cv2.rotate(frame2, cv2.ROTATE_90_CLOCKWISE)
+        frame1 = cv2.resize(frame1, (360, 480))
+        frame2 = cv2.resize(frame2, (360, 480))
+        
+        img1 = cv2.cvtColor(frame1, cv2.COLOR_BGR2RGB)
+        img2 = cv2.cvtColor(frame2, cv2.COLOR_BGR2RGB)
+        res1 = pose.process(img1)
+        res2 = pose.process(img2)
+        
+        diffs = None
+        if res1.pose_landmarks and res2.pose_landmarks:
+            kp1 = [(lm.x, lm.y, lm.z) for lm in res1.pose_landmarks.landmark]
+            kp2 = [(lm.x, lm.y, lm.z) for lm in res2.pose_landmarks.landmark]
+            diffs = calculate_difference(kp1, kp2)
+        
+        window_diffs.append(diffs)
+        window_frames.append((frame1, frame2, res1, res2))
+        frame_count += 1
+        
+        if len(window_frames) == window_size or (not ret1 or not ret2):
+            max_diffs = [None] * len(JOINT_NAMES)
+            if any(d is not None for d in window_diffs):
+                for i in range(len(JOINT_NAMES)):
+                    valid_diffs = [d[i] for d in window_diffs if d is not None and d[i] is not None]
+                    max_diffs[i] = max(valid_diffs) if valid_diffs else None
+            
+            valid_diffs = [(i, d) for i, d in enumerate(max_diffs) if d is not None]
+            valid_diffs.sort(key=lambda x: x[1], reverse=True)
+            top_errors = valid_diffs[:5]
+            avg_diff = np.mean([d for _, d in top_errors]) if top_errors else 0
+            
+            mid_idx = min(len(window_frames) // 2, len(window_frames) - 1)
+            frame1, frame2, res1, res2 = window_frames[mid_idx]
+            
+            if res1.pose_landmarks:
+                teacher_style = mp_drawing.DrawingSpec(color=(255, 255, 0), thickness=1, circle_radius=2)
+                mp_drawing.draw_landmarks(frame2, res1.pose_landmarks, mp_pose.POSE_CONNECTIONS,
+                                        landmark_drawing_spec=teacher_style)
+            
+            if res2.pose_landmarks:
+                overlay = frame2.copy()
+                for i, d in top_errors:
+                    h, w = frame2.shape[:2]
+                    p2 = res2.pose_landmarks.landmark[i]
+                    x, y = int(p2.x * w), int(p2.y * h)
+                    if d > threshold:
+                        intensity = min(255, int(d * 1000))
+                        cv2.circle(overlay, (x, y), 20, (0, 0, intensity), -1)
+                alpha = 0.3
+                frame2 = cv2.addWeighted(overlay, alpha, frame2, 1 - alpha, 0)
+                mp_drawing.draw_landmarks(frame2, res2.pose_landmarks, mp_pose.POSE_CONNECTIONS)
+            
+            combined_base = cv2.hconcat([frame1, frame2])
+            
+            num_repeats = 20 if avg_diff <= 1.5 * threshold else 30
+            for t in range(num_repeats):
+                combined = combined_base.copy()
+                
+                pulse = 0.5 * (1 + np.sin(2 * np.pi * t / num_repeats))
+                circle_radius = int(5 + 3 * pulse)
+                text_scale = 0.7 + 0.2 * pulse
+                
+                if res2.pose_landmarks:
+                    for i, d in top_errors:
+                        h, w = frame2.shape[:2]
+                        p2 = res2.pose_landmarks.landmark[i]
+                        x, y = int(p2.x * w), int(p2.y * h)
+                        if d > threshold * 1.5:
+                            color = (0, 0, 255)
+                            label = f"{JOINT_NAMES[i]}: High"
+                        elif d > threshold:
+                            color = (0, 255, 255)
+                            label = f"{JOINT_NAMES[i]}: Adjust"
+                        else:
+                            color = (0, 255, 0)
+                            label = None
+                        cv2.circle(combined, (x + 360, y), circle_radius, color, -1)
+                        if label:
+                            cv2.putText(combined, label, (x + 370, y), cv2.FONT_HERSHEY_SIMPLEX, 
+                                       0.6, color, 1)
+                
+                if avg_diff > 1.5 * threshold:
+                    cv2.putText(combined, "High Error Detected", (10, 30), 
+                               cv2.FONT_HERSHEY_SIMPLEX, text_scale, (0, 0, 255), 2)
+                
+                if top_errors:
+                    summary = "Focus on: " + ", ".join(JOINT_NAMES[i] for i, _ in top_errors[:3])
+                    opacity = 1.0
+                    if t < num_repeats // 2:
+                        opacity = t / (num_repeats // 2)
+                    else:
+                        opacity = 1 - (t - num_repeats // 2) / (num_repeats // 2)
+                    overlay = combined.copy()
+                    cv2.putText(overlay, summary, (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 
+                               0.7, (255, 255, 255), 2)
+                    cv2.addWeighted(overlay, opacity, combined, 1 - opacity, 0, combined)
+                
+                out.write(combined)
+            
+            window_diffs = []
+            window_frames = []
+    
+    cap1.release()
+    cap2.release()
+    out.release()
+    print(f"Dynamic comparison video saved to {output_path}")
+
 def load_teacher_reference(video_path):
     cap = cv2.VideoCapture(video_path)
     ref_kp = None
@@ -333,7 +624,6 @@ def main():
     parser.add_argument('--student', help='Path to student video (omit for live mode)')
     parser.add_argument('--live', action='store_true', help='Enable real-time webcam feedback')
     parser.add_argument('--threshold', type=float, default=0.1, help='Highlight threshold for differences (normalized)')
-    parser.add_argument('--output', default='output_comparison.mp4', help='Output path for comparison video')
     parser.add_argument('--sport', default='general', help='Sport context: fencing, skating, or general')
 
     args = parser.parse_args()
@@ -352,35 +642,30 @@ def main():
         print(f"Teacher frames with keypoints: {sum(kp is not None for kp in teacher_kps)} / {len(teacher_kps)}")
         print(f"Student frames with keypoints: {sum(kp is not None for kp in student_kps)} / {len(student_kps)}")
         differences = compare_videos(teacher_kps, student_kps)
-        avg_diffs, tips = summarize_differences(differences)
+        avg_diffs, tips = summarize_differences(differences, teacher_kps=teacher_kps, student_kps=student_kps,
+                                               sport=args.sport, threshold=args.threshold)
         print("Average Differences:", avg_diffs)
-        # After computing avg_diffs and obtaining basic tips from summarize_differences()
-        avg_diffs, basic_tips = summarize_differences(differences)
-
-        # Now generate sport-specific heuristics
-        # For example, for fencing:
-        sport_tips = generate_heuristics(avg_diffs, differences, sport=args.sport, joint_threshold=args.threshold)
-
-        # Merge or choose one set of tips:
-        tips = basic_tips + sport_tips
-
         print("Tips for Improvement:", tips)
-
-        visualize_comparison(args.teacher, args.student, output_path=args.output, threshold=args.threshold)
+        
+        # Generate both comparison videos
+        visualize_comparison_normal(args.teacher, args.student, output_path="output_comparison_normal.mp4", 
+                                  threshold=args.threshold)
+        visualize_comparison_dynamic(args.teacher, args.student, output_path="output_comparison_dynamic.mp4", 
+                                   threshold=args.threshold)
+        
         accuracy_scores = compute_accuracy_score(differences, threshold=args.threshold)
         avg_accuracy = np.mean(accuracy_scores)
         print(f"Overall Pose Accuracy: {avg_accuracy:.2f}%")
         export_differences_to_csv(differences, output_csv="session_differences.csv")
         plot_average_errors(avg_diffs, output_path="session_avg_errors.png")
-
-        # Define which joints you want to track over time.
-        # For example, here we use RIGHT_WRIST, LEFT_KNEE, and RIGHT_ANKLE:
+        
         key_joints = [
             mp_pose.PoseLandmark.RIGHT_WRIST.value,
             mp_pose.PoseLandmark.LEFT_KNEE.value,
             mp_pose.PoseLandmark.RIGHT_ANKLE.value
         ]
         plot_joint_errors_over_time(differences, key_joints, output_prefix="session_joint_errors")
+
 
 if __name__ == "__main__":
     main()
