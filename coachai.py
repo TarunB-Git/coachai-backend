@@ -398,7 +398,7 @@ def visualize_comparison_dynamic(teacher_video, student_video, output_path="outp
             
             valid_diffs = [(i, d) for i, d in enumerate(max_diffs) if d is not None]
             valid_diffs.sort(key=lambda x: x[1], reverse=True)
-            top_errors = valid_diffs[:5]
+            top_errors = valid_diffs[:1]
             avg_diff = np.mean([d for _, d in top_errors]) if top_errors else 0
             
             mid_idx = min(len(window_frames) // 2, len(window_frames) - 1)
@@ -493,13 +493,22 @@ def load_teacher_reference(video_path):
     return ref_kp
 
 
-def live_pose_feedback(teacher_kps, threshold=0.1):
+def live_pose_feedback(teacher_kps, threshold=0.1, sport="general"):
+    """
+    Provides real-time feedback by comparing live webcam feed against teacher's reference keypoints.
+    Displays visual alerts and textual tips for posture corrections.
+    """
     cv2.namedWindow('Live Pose Feedback', cv2.WINDOW_NORMAL)
     cv2.startWindowThread()
     cap = cv2.VideoCapture(0)
     if not cap.isOpened():
         print("Error: Cannot open webcam. Check device connection.")
         return
+    
+    frame_count = 0
+    differences = []
+    tips = []
+    
     while True:
         ret, frame = cap.read()
         if not ret:
@@ -507,33 +516,80 @@ def live_pose_feedback(teacher_kps, threshold=0.1):
             break
         img_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         res = pose.process(img_rgb)
+        
         if res.pose_landmarks and teacher_kps:
             student_kps = [(lm.x, lm.y, lm.z) for lm in res.pose_landmarks.landmark]
-            # Compute 2D differences
-            diffs2d = []
-            for i, (t, s) in enumerate(zip(teacher_kps, student_kps)):
-                if t and s:
-                    dx = t[0] - s[0]
-                    dy = t[1] - s[1]
-                    diffs2d.append((i, np.hypot(dx, dy)))
-            if diffs2d:
-                mean_diff2d = np.mean([d for _, d in diffs2d])
-                accuracy = max(0, 100 - mean_diff2d * 100)
-            else:
-                accuracy = 0
-            mp_drawing.draw_landmarks(frame, res.pose_landmarks, mp_pose.POSE_CONNECTIONS)
-            cv2.putText(frame, f"Accuracy: {accuracy:.2f}%", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
-            for idx, d in diffs2d:
-                if d > threshold:
+            # Compute differences
+            diffs = calculate_difference(teacher_kps, student_kps)
+            differences.append(diffs)
+            
+            # Keep only the last 30 frames to avoid excessive memory usage
+            if len(differences) > 30:
+                differences.pop(0)
+            
+            # Generate tips every 30 frames
+            if frame_count % 30 == 0:
+                avg_diffs = np.nanmean(differences, axis=0)
+                if isinstance(avg_diffs, np.ndarray):
+                    new_tips, _ = generate_heuristics(
+                        avg_diffs,
+                        differences,
+                        sport=sport,
+                        joint_threshold=threshold,
+                        teacher_kps=[teacher_kps],
+                        student_kps=[student_kps]
+                    )
+                    tips = new_tips[:3]  # Limit to top 3 tips
+            
+            # Calculate accuracy
+            valid_diffs = [d for d in diffs if d is not None]
+            mean_diff = np.mean(valid_diffs) if valid_diffs else 0
+            accuracy = max(0, 100 - (mean_diff * 100))
+            
+            # Visual alerts
+            overlay = frame.copy()
+            for i, d in enumerate(diffs):
+                if d is not None and d > threshold:
                     h, w = frame.shape[:2]
-                    lm = res.pose_landmarks.landmark[idx]
-                    cv2.circle(frame, (int(lm.x * w), int(lm.y * h)), 5, (0, 0, 255), -1)
+                    lm = res.pose_landmarks.landmark[i]
+                    x, y = int(lm.x * w), int(lm.y * h)
+                    # Pulsing red circle for high error
+                    pulse = 0.5 * (1 + np.sin(2 * np.pi * frame_count / 20))
+                    radius = int(5 + 3 * pulse)
+                    color = (0, 0, 255) if d > threshold * 1.5 else (0, 255, 255)
+                    cv2.circle(overlay, (x, y), radius, color, -1)
+                    # Label for high-error joints
+                    if d > threshold * 1.5:
+                        cv2.putText(overlay, f"{JOINT_NAMES[i]}: High", (x + 10, y),
+                                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1)
+            
+            # Apply overlay with transparency
+            alpha = 0.4
+            frame = cv2.addWeighted(overlay, alpha, frame, 1 - alpha, 0)
+            
+            # Draw landmarks
+            mp_drawing.draw_landmarks(frame, res.pose_landmarks, mp_pose.POSE_CONNECTIONS)
+            
+            # Display accuracy and tips
+            cv2.putText(frame, f"Accuracy: {accuracy:.2f}%", (10, 30),
+                       cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+            for i, tip in enumerate(tips):
+                cv2.putText(frame, tip, (10, 60 + i * 30),
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1)
+        
+        else:
+            # No landmarks detected
+            cv2.putText(frame, "No pose detected", (10, 30),
+                       cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
+        
         cv2.imshow('Live Pose Feedback', frame)
-        if cv2.waitKey(1) & 0xFF == 27:
+        frame_count += 1
+        
+        if cv2.waitKey(1) & 0xFF == 27:  # Press 'Esc' to exit
             break
+    
     cap.release()
     cv2.destroyAllWindows()
-
 # --- Accuracy Scoring Function ---
 def compute_accuracy_score(differences, threshold=0.1):
     scores = []
