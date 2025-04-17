@@ -22,7 +22,28 @@ def calculate_difference(kp1, kp2):
         else:
             diffs.append(None)
     return diffs
-
+def estimate_orientation(results):
+    """
+    Estimate video orientation based on pose landmarks.
+    Returns 0, 90, 180, or 270 degrees.
+    """
+    if not results.pose_landmarks:
+        return 0
+    landmarks = results.pose_landmarks.landmark
+    left_shoulder = np.array([landmarks[mp_pose.PoseLandmark.LEFT_SHOULDER.value].x,
+                              landmarks[mp_pose.PoseLandmark.LEFT_SHOULDER.value].y])
+    right_shoulder = np.array([landmarks[mp_pose.PoseLandmark.RIGHT_SHOULDER.value].x,
+                               landmarks[mp_pose.PoseLandmark.RIGHT_SHOULDER.value].y])
+    vector = right_shoulder - left_shoulder
+    angle = np.arctan2(vector[1], vector[0]) * 180 / np.pi
+    if abs(angle) < 45:
+        return 0
+    elif 45 <= angle < 135:
+        return 90
+    elif abs(angle) >= 135:
+        return 180
+    else:
+        return 270
 def extract_keypoints(video_path):
     cap = cv2.VideoCapture(video_path)
     keypoints = []
@@ -79,6 +100,25 @@ def visualize_comparison(teacher_video, student_video, normal_output="output_com
                         dynamic_output="output_comparison_dynamic.mp4", threshold=0.1):
     cap1 = cv2.VideoCapture(teacher_video)
     cap2 = cv2.VideoCapture(student_video)
+    
+    # Estimate orientation for teacher video
+    teacher_rotation = 0
+    ret, frame = cap1.read()
+    if ret:
+        frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        results = pose.process(frame)
+        teacher_rotation = estimate_orientation(results)
+        cap1.set(cv2.CAP_PROP_POS_FRAMES, 0)  # Reset to start
+    
+    # Estimate orientation for student video
+    student_rotation = 0
+    ret, frame = cap2.read()
+    if ret:
+        frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        results = pose.process(frame)
+        student_rotation = estimate_orientation(results)
+        cap2.set(cv2.CAP_PROP_POS_FRAMES, 0)  # Reset to start
+    
     fourcc = cv2.VideoWriter_fourcc(*'mp4v')
     out_normal = cv2.VideoWriter(normal_output, fourcc, 20.0, (720, 480))
     out_dynamic = cv2.VideoWriter(dynamic_output, fourcc, 20.0, (720, 480))
@@ -88,14 +128,29 @@ def visualize_comparison(teacher_video, student_video, normal_output="output_com
     window_diffs = []
     window_frames = []
     
+    def rotate_frame(frame, rotation):
+        """
+        Rotate the frame based on the rotation angle (in degrees).
+        """
+        if rotation == 90:
+            return cv2.rotate(frame, cv2.ROTATE_90_CLOCKWISE)
+        elif rotation == 180:
+            return cv2.rotate(frame, cv2.ROTATE_180)
+        elif rotation == 270:
+            return cv2.rotate(frame, cv2.ROTATE_90_COUNTERCLOCKWISE)
+        return frame  # No rotation (0 degrees)
+    
     while cap1.isOpened() and cap2.isOpened():
         ret1, frame1 = cap1.read()
         ret2, frame2 = cap2.read()
         if not ret1 or not ret2:
             break
         
-        frame1 = cv2.rotate(frame1, cv2.ROTATE_90_CLOCKWISE)
-        frame2 = cv2.rotate(frame2, cv2.ROTATE_90_CLOCKWISE)
+        # Apply rotation to correct orientation
+        frame1 = rotate_frame(frame1, teacher_rotation)
+        frame2 = rotate_frame(frame2, student_rotation)
+        
+        # Resize frames to consistent dimensions
         frame1 = cv2.resize(frame1, (360, 480))
         frame2 = cv2.resize(frame2, (360, 480))
         
@@ -261,7 +316,30 @@ def visualize_comparison(teacher_video, student_video, normal_output="output_com
     out_dynamic.release()
     print(f"Normal comparison video saved to {normal_output}")
     print(f"Dynamic comparison video saved to {dynamic_output}")
+import subprocess
+import json
 
+def get_video_rotation(video_path):
+    """
+    Get the rotation angle of a video in degrees using ffprobe.
+    Returns 0, 90, 180, or 270, or 0 if no rotation is specified.
+    """
+    try:
+        command = [
+            "ffprobe",
+            "-v", "error",
+            "-select_streams", "v:0",
+            "-show_entries", "stream_tags=rotate",
+            "-of", "json",
+            video_path
+        ]
+        result = subprocess.run(command, capture_output=True, text=True, check=True)
+        metadata = json.loads(result.stdout)
+        rotate = metadata.get("streams", [{}])[0].get("tags", {}).get("rotate", "0")
+        return int(rotate)
+    except (subprocess.CalledProcessError, json.JSONDecodeError, ValueError) as e:
+        print(f"Could not determine rotation for {video_path}: {e}. Assuming 0 degrees.")
+        return 0
 def compute_accuracy_score(differences, threshold=0.1):
     scores = []
     for frame_diff in differences:
