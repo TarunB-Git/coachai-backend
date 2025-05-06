@@ -123,4 +123,6 @@ OpenCV for video processing.
 
 Matplotlib for analytics plotting.
 
+Balaji for the frontend
+
 Enjoy coaching and training with AI-powered insights!
