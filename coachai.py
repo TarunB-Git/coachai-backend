@@ -1,8 +1,6 @@
 import argparse
 
-import numpy as np
-
-from coachai_backend.core import JOINT_NAMES, run_offline_session
+from coachai_backend.core import run_offline_session
 from coachai_backend.realtime import live_pose_feedback, load_teacher_reference
 
 
@@ -34,15 +32,9 @@ def main():
         sport=args.sport,
     )
 
-    avg_diffs = result["average_differences"]
-    print("Average Differences:", avg_diffs)
+    print("Average Differences:", result["average_differences"])
     print("Tips for Improvement:", result["tips"])
     print(f"Overall Pose Accuracy: {result['average_accuracy']:.2f}%")
-
-    if isinstance(avg_diffs, np.ndarray):
-        for idx, value in enumerate(avg_diffs):
-            if idx < len(JOINT_NAMES):
-                _ = (JOINT_NAMES[idx], value)
 
 
 if __name__ == "__main__":

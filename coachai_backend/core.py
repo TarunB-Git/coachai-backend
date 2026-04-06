@@ -129,14 +129,14 @@ def visualize_comparison(teacher_video, student_video, normal_output="output_com
     window_diffs = []
     window_frames = []
 
-    def rotate_frame(frame_value, rotation):
+    def rotate_frame(frame, rotation):
         if rotation == 90:
-            return cv2.rotate(frame_value, cv2.ROTATE_90_CLOCKWISE)
+            return cv2.rotate(frame, cv2.ROTATE_90_CLOCKWISE)
         if rotation == 180:
-            return cv2.rotate(frame_value, cv2.ROTATE_180)
+            return cv2.rotate(frame, cv2.ROTATE_180)
         if rotation == 270:
-            return cv2.rotate(frame_value, cv2.ROTATE_90_COUNTERCLOCKWISE)
-        return frame_value
+            return cv2.rotate(frame, cv2.ROTATE_90_COUNTERCLOCKWISE)
+        return frame
 
     while cap1.isOpened() and cap2.isOpened():
         ret1, frame1 = cap1.read()
