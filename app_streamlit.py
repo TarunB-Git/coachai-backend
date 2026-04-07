@@ -61,7 +61,8 @@ if session_mode == "Offline comparison":
 
             st.success("Comparison completed.")
             st.metric("Average accuracy", f"{result['average_accuracy']:.2f}%")
-            st.write("Tips", result["tips"])
+            st.subheader("Tips")
+            st.write(result["tips"])
 
             st.subheader("Generated videos")
             c1, c2 = st.columns(2)
@@ -80,7 +81,7 @@ if session_mode == "Offline comparison":
                 for chart in joint_plots:
                     st.image(str(chart), caption=chart.name)
             else:
-                st.info("No joint error charts were generated for this run.")
+                st.warning("No joint error charts were generated for this run.")
 
             st.subheader("Frame-by-frame differences")
             st.download_button(
