@@ -53,10 +53,14 @@ python coachai.py --teacher path/to/teacher.mp4 --live --threshold 0.1 --sport g
 streamlit run app_streamlit.py
 ```
 
-Then upload teacher/student videos, run comparison, and inspect:
+Then choose a mode in the sidebar:
 
-- Accuracy metric
-- Improvement tips
-- Generated videos
-- Error charts
-- CSV export
+- **Offline comparison**: upload teacher/student videos, run comparison, and inspect:
+  - Accuracy metric
+  - Improvement tips
+  - Generated videos
+  - Error charts
+  - CSV export
+- **Live session**: upload teacher video and start a webcam session to get real-time posture feedback against the coach reference.
+
+Press `ESC` in the OpenCV live window to end the live session.
