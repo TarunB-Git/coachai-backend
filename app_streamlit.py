@@ -76,8 +76,11 @@ if session_mode == "Offline comparison":
             st.image(str(result["avg_error_plot"]), caption="Average error per joint")
 
             joint_plots = sorted(workspace.glob(f"{run_id}_session_joint_errors_*.png"))
-            for chart in joint_plots:
-                st.image(str(chart), caption=chart.name)
+            if joint_plots:
+                for chart in joint_plots:
+                    st.image(str(chart), caption=chart.name)
+            else:
+                st.info("No joint error charts were generated for this run.")
 
             st.subheader("Frame-by-frame differences")
             st.download_button(
