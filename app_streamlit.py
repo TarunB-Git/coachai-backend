@@ -15,7 +15,6 @@ with st.sidebar:
     sport = st.selectbox("Sport", ["general", "fencing", "skating"])
 
 teacher_file = st.file_uploader("Teacher video (.mp4)", type=["mp4"], key="teacher")
-student_file = None
 if session_mode == "Offline comparison":
     student_file = st.file_uploader("Student video (.mp4)", type=["mp4"], key="student")
 else:
@@ -36,8 +35,8 @@ if session_mode == "Offline comparison":
         if not teacher_file or not student_file:
             st.error("Upload both teacher and student videos.")
         else:
-            run_id = str(int(st.session_state.get("_last_run_id", 0) + 1))
-            st.session_state["_last_run_id"] = int(run_id)
+            run_id = int(st.session_state.get("_last_run_id", 0)) + 1
+            st.session_state["_last_run_id"] = run_id
 
             teacher_path = _save_upload(teacher_file, f"{run_id}_teacher")
             student_path = _save_upload(student_file, f"{run_id}_student")
@@ -76,7 +75,7 @@ if session_mode == "Offline comparison":
             st.subheader("Charts")
             st.image(str(result["avg_error_plot"]), caption="Average error per joint")
 
-            joint_plots = sorted(workspace.glob(f"{joint_prefix.name}_*.png"))
+            joint_plots = sorted(workspace.glob(f"{run_id}_session_joint_errors_*.png"))
             for chart in joint_plots:
                 st.image(str(chart), caption=chart.name)
 
