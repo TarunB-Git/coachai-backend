@@ -15,9 +15,11 @@ with st.sidebar:
     threshold = st.slider("Threshold", min_value=0.01, max_value=0.5, value=0.1, step=0.01)
     sport = st.selectbox("Sport", ["general", "fencing", "skating"])
 
-teacher_file = st.file_uploader("Teacher video (.mp4)", type=["mp4"], key="teacher")
 if session_mode == "Offline comparison":
+    teacher_file = st.file_uploader("Teacher video (.mp4)", type=["mp4"], key="teacher")
     student_file = st.file_uploader("Student video (.mp4)", type=["mp4"], key="student")
+else:
+    teacher_file = st.file_uploader("Teacher video (.mp4)", type=["mp4"], key="teacher")
 
 workspace = Path("streamlit_runs")
 workspace.mkdir(parents=True, exist_ok=True)
@@ -74,8 +76,7 @@ if session_mode == "Offline comparison":
             st.subheader("Charts")
             st.image(str(result["avg_error_plot"]), caption="Average error per joint")
 
-            joint_prefix_name = Path(result["joint_plot_prefix"]).name
-            joint_plots = sorted(workspace.glob(f"{joint_prefix_name}_*.png"))
+            joint_plots = sorted(workspace.glob(f"{run_id}_session_joint_errors_*.png"))
             if joint_plots:
                 for chart in joint_plots:
                     st.image(str(chart), caption=chart.name)
