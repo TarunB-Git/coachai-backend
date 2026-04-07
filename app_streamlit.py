@@ -1,4 +1,5 @@
 from pathlib import Path
+from uuid import uuid4
 
 import streamlit as st
 
@@ -35,8 +36,7 @@ if session_mode == "Offline comparison":
         if not teacher_file or not student_file:
             st.error("Upload both teacher and student videos.")
         else:
-            run_id = int(st.session_state.get("_last_run_id", 0)) + 1
-            st.session_state["_last_run_id"] = run_id
+            run_id = uuid4().hex
 
             teacher_path = _save_upload(teacher_file, f"{run_id}_teacher")
             student_path = _save_upload(student_file, f"{run_id}_student")
@@ -81,7 +81,7 @@ if session_mode == "Offline comparison":
                 for chart in joint_plots:
                     st.image(str(chart), caption=chart.name)
             else:
-                st.warning("No joint error charts were generated for this run.")
+                st.warning("No joint error charts were generated for this run (this can happen if pose detection is limited).")
 
             st.subheader("Frame-by-frame differences")
             st.download_button(
