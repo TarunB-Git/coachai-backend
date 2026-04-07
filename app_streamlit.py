@@ -18,8 +18,6 @@ with st.sidebar:
 teacher_file = st.file_uploader("Teacher video (.mp4)", type=["mp4"], key="teacher")
 if session_mode == "Offline comparison":
     student_file = st.file_uploader("Student video (.mp4)", type=["mp4"], key="student")
-else:
-    st.info("Live session uses your webcam and compares your posture to the uploaded teacher video.")
 
 workspace = Path("streamlit_runs")
 workspace.mkdir(parents=True, exist_ok=True)
@@ -76,7 +74,8 @@ if session_mode == "Offline comparison":
             st.subheader("Charts")
             st.image(str(result["avg_error_plot"]), caption="Average error per joint")
 
-            joint_plots = sorted(workspace.glob(f"{run_id}_session_joint_errors_*.png"))
+            joint_prefix_name = Path(result["joint_plot_prefix"]).name
+            joint_plots = sorted(workspace.glob(f"{joint_prefix_name}_*.png"))
             if joint_plots:
                 for chart in joint_plots:
                     st.image(str(chart), caption=chart.name)
@@ -91,6 +90,7 @@ if session_mode == "Offline comparison":
                 mime="text/csv",
             )
 else:
+    st.info("Live session uses your webcam and compares your posture to the uploaded teacher video.")
     if st.button("Start live session", type="primary"):
         if not teacher_file:
             st.error("Upload a teacher video to start a live session.")
